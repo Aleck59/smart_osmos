@@ -1,0 +1,15 @@
+# ESPHome
+esphome/.esphome/
+esphome/secrets.yaml
+.esphome/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Прочее
+.DS_Store
+.ruff_cache/

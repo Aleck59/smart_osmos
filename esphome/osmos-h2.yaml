@@ -1,0 +1,926 @@
+# =============================================================================
+#  Smart Osmos H2 — контроллер бытового обратного осмоса на ESP32-H2 Super Mini
+# =============================================================================
+#
+#  Датчики : 2 x YF-S402B (расход), TDS Meter v1.0 (аналоговый), OLED 0.91"
+#            SSD1306 128x32, одна тактовая кнопка.
+#  Связь   : только BLE (у ESP32-H2 нет Wi-Fi) — протокол приложения
+#            VGCH/smart_osmos + расширенные характеристики для Home Assistant.
+#  Прошивка: обновление по BLE (external component esp32_ble_ota).
+#
+#  ВСЕ ПИНЫ И КАЛИБРОВКИ — В БЛОКЕ substitutions НИЖЕ.
+# =============================================================================
+
+substitutions:
+  # ----------------------------- ПИНЫ ----------------------------------------
+  pin_i2c_sda: GPIO12        # OLED SDA
+  pin_i2c_scl: GPIO11        # OLED SCL
+  pin_flow_in: GPIO13        # расходомер №1 — водопровод (до мембраны)
+  pin_flow_out: GPIO14       # расходомер №2 — чистая вода (после мембраны)
+  pin_button: GPIO10         # кнопка управления
+  pin_tds: GPIO5             # TDS Meter v1.0, аналоговый выход (ADC1_CH4)
+
+  # --------------------------- КНОПКА ----------------------------------------
+  # По умолчанию: кнопка замыкает пин на GND (второй вывод — на GND),
+  # поэтому включена внутренняя подтяжка к питанию и инверсия.
+  # Если кнопка подаёт «+» на пин, поставьте:
+  #   button_pullup: "false", button_pulldown: "true", button_inverted: "false"
+  button_pullup: "true"
+  button_pulldown: "false"
+  button_inverted: "true"
+
+  # -------------------------- РАСХОДОМЕРЫ ------------------------------------
+  # Импульсов на литр. Для YF-S402B F = 98 * Q(л/мин) => 98 * 60 = 5880 имп/л.
+  # Точное значение получается калибровкой «на 1 литр» в меню дисплея.
+  pulses_per_liter_in: "5880"
+  pulses_per_liter_out: "5880"
+
+  # ------------------------- РЕСУРС СТУПЕНЕЙ, Л ------------------------------
+  stage1_limit: "6000"       # 1 — механика PP 5 мкм
+  stage2_limit: "6000"       # 2 — уголь GAC
+  stage3_limit: "6000"       # 3 — прессованный уголь CTO
+  stage4_limit: "5000"       # 4 — мембрана RO
+  stage5_limit: "3000"       # 5 — постфильтр T33 (считается по чистой воде)
+
+  # ----------------------------- ПРОЧЕЕ --------------------------------------
+  device_name: smart-osmos
+  ble_name: "SMART OSMOS"    # имя, по которому устройство ищет приложение
+  ota_password: "OeN12345"   # пароль обновления, как в исходной прошивке
+  display_timeout: "10min"   # гашение дисплея при бездействии кнопки
+  i2c_address: "0x3C"
+
+# =============================================================================
+
+esphome:
+  name: ${device_name}
+  friendly_name: Smart Osmos
+  comment: "Контроллер обратного осмоса на ESP32-H2 (BLE)"
+  min_version: 2026.1.0
+  project:
+    name: "aleck59.smart_osmos"
+    version: "1.0.0"
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: "id(ui_last_activity) = millis();"
+        - lambda: "id(oled).set_contrast(id(num_contrast).state / 100.0f);"
+
+esp32:
+  board: esp32-h2-devkitm-1
+  variant: esp32h2
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+external_components:
+  # Ядро логики осмоса (лежит рядом с этим файлом).
+  - source:
+      type: local
+      path: components
+    components: [smart_osmos]
+  # Обновление прошивки по BLE.
+  - source: github://slynn1324/esp32_ble_ota
+    components: [esp32_ble_ota]
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+# ------------------------------- ЯДРО ----------------------------------------
+smart_osmos:
+  id: osmos
+  pulses_per_liter_in: ${pulses_per_liter_in}
+  pulses_per_liter_out: ${pulses_per_liter_out}
+  display_timeout: ${display_timeout}
+  ota_password: ${ota_password}
+  flow_window: 5s
+  local_mtu: 512
+  stages:
+    - limit: ${stage1_limit}
+      source: inlet
+    - limit: ${stage2_limit}
+      source: inlet
+    - limit: ${stage3_limit}
+      source: inlet
+    - limit: ${stage4_limit}
+      source: inlet
+    - limit: ${stage5_limit}
+      source: permeate
+
+# ------------------------------- BLE -----------------------------------------
+esp32_ble:
+  id: ble_hub
+  name: ${ble_name}
+  max_connections: 3
+  advertising: true
+
+esp32_ble_server:
+  id: ble_server
+  manufacturer: "Smart Osmos"
+  model: "OSMOS-H2"
+  firmware_version: "1.0.0"
+  services:
+    # UUID сервиса и первой характеристики повторяют исходную прошивку —
+    # мобильное приложение из проекта VGCH/smart_osmos работает без изменений.
+    - uuid: "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+      advertise: true
+      characteristics:
+        # --- Совместимая с приложением характеристика (JSON) ---
+        - id: char_app
+          uuid: "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+          description: "Smart Osmos app channel"
+          read: true
+          write: true
+          notify: true
+          on_write:
+            - lambda: |-
+                id(osmos).handle_command(std::string(x.begin(), x.end()));
+        # --- Расширенная телеметрия для Home Assistant ---
+        - id: char_ext
+          uuid: "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+          description: "Smart Osmos telemetry"
+          read: true
+          notify: true
+        # --- Расширенная конфигурация (ресурсы, даты замены, калибровки) ---
+        - id: char_ext_cfg
+          uuid: "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+          description: "Smart Osmos configuration"
+          read: true
+          notify: true
+
+ota:
+  - platform: esp32_ble_ota
+    password: ${ota_password}
+
+# ------------------------------- ШИНЫ ----------------------------------------
+i2c:
+  id: bus_i2c
+  sda: ${pin_i2c_sda}
+  scl: ${pin_i2c_scl}
+  frequency: 400kHz
+  scan: true
+
+# ------------------------------ ДАТЧИКИ --------------------------------------
+sensor:
+  # --- Расходомер водопроводной воды -----------------------------------------
+  - platform: pulse_counter
+    id: pc_in
+    pin:
+      number: ${pin_flow_in}
+      mode:
+        input: true
+        pullup: true
+    update_interval: 1s
+    internal: true
+    # Значение приходит в импульсах в минуту; при интервале 1 с число
+    # импульсов за такт = x / 60.
+    on_value:
+      - lambda: "id(osmos).add_pulses_in((uint32_t) lroundf(x / 60.0f));"
+
+  # --- Расходомер чистой воды ------------------------------------------------
+  - platform: pulse_counter
+    id: pc_out
+    pin:
+      number: ${pin_flow_out}
+      mode:
+        input: true
+        pullup: true
+    update_interval: 1s
+    internal: true
+    on_value:
+      - lambda: "id(osmos).add_pulses_out((uint32_t) lroundf(x / 60.0f));"
+
+  # --- TDS Meter v1.0 --------------------------------------------------------
+  - platform: adc
+    id: adc_tds
+    pin: ${pin_tds}
+    attenuation: 12db
+    samples: 16
+    update_interval: 2s
+    internal: true
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+    on_value:
+      - lambda: "id(osmos).set_tds_voltage(x);"
+
+  # --- Витрина значений для графика и меню -----------------------------------
+  - platform: template
+    id: sens_tds
+    name: "TDS"
+    unit_of_measurement: "ppm"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: "return id(osmos).tds();"
+
+# ------------------------------ КНОПКА ---------------------------------------
+binary_sensor:
+  - platform: gpio
+    id: btn
+    internal: true
+    pin:
+      number: ${pin_button}
+      mode:
+        input: true
+        pullup: ${button_pullup}
+        pulldown: ${button_pulldown}
+      inverted: ${button_inverted}
+    filters:
+      - delayed_on: 15ms
+      - delayed_off: 15ms
+    on_multi_click:
+      # --- УДЕРЖАНИЕ = ДЕЙСТВИЕ ---
+      - timing:
+          - ON for at least 700ms
+        then:
+          - if:
+              condition:
+                lambda: "return !id(ui_display_on);"
+              then:
+                - script.execute: ui_touch
+              else:
+                - script.execute: ui_touch
+                - script.execute: nav_action
+      # --- ДВОЙНОЙ КЛИК = НАЗАД ---
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 400ms
+          - ON for at most 400ms
+          - OFF for at least 50ms
+        then:
+          - if:
+              condition:
+                lambda: "return !id(ui_display_on);"
+              then:
+                - script.execute: ui_touch
+              else:
+                - script.execute: ui_touch
+                - script.execute: nav_back
+      # --- КОРОТКИЙ КЛИК = ЛИСТАНИЕ ---
+      - timing:
+          - ON for at most 400ms
+          - OFF for at least 500ms
+        then:
+          - if:
+              condition:
+                lambda: "return !id(ui_display_on);"
+              then:
+                - script.execute: ui_touch
+              else:
+                - script.execute: ui_touch
+                - script.execute: nav_next
+
+# ----------------------------- СОСТОЯНИЕ UI ----------------------------------
+globals:
+  - id: ui_page
+    type: int
+    initial_value: "0"
+  - id: ui_display_on
+    type: bool
+    initial_value: "true"
+  - id: ui_last_activity
+    type: uint32_t
+    initial_value: "0"
+  - id: menu_depth
+    type: int
+    initial_value: "0"
+  - id: menu_editing
+    type: bool
+    initial_value: "false"
+
+# ------------------------------ ШРИФТЫ ---------------------------------------
+font:
+  - file: "gfonts://Roboto"
+    id: f_tiny
+    size: 9
+    bpp: 1
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core]
+    ignore_missing_glyphs: true
+
+  - file: "gfonts://Roboto"
+    id: f_small
+    size: 11
+    bpp: 1
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core]
+    ignore_missing_glyphs: true
+
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: f_big
+    size: 18
+    bpp: 1
+    glyphs: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "-", " "]
+
+  # Material Design Icons — иконки для экранов расхода и TDS.
+  - file:
+      type: web
+      url: "https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf"
+    id: f_icon
+    size: 12
+    bpp: 1
+    glyphs:
+      - "\U000F058F" # mdi:water-pump    — водопровод
+      - "\U000F1504" # mdi:water-check   — чистая вода
+      - "\U000F058E" # mdi:water-percent — TDS
+      - "\U000F0236" # mdi:filter-variant — фильтры
+      - "\U000F00ED" # mdi:calendar      — даты замены
+      - "\U000F0493" # mdi:cog           — настройки
+
+# ------------------------------ ГРАФИК ---------------------------------------
+graph:
+  - id: graph_tds
+    sensor: sens_tds
+    duration: 24h
+    x_grid: 6h
+    width: 54
+    height: 28
+    min_range: 20
+    border: false
+
+# ------------------------- НАСТРОЙКИ ДЛЯ МЕНЮ --------------------------------
+number:
+  - platform: template
+    id: num_c_out
+    name: \"Pulses per liter clean"
+    internal: true
+    min_value: 100
+    max_value: 20000
+    step: 10
+    update_interval: 5s
+    lambda: "return id(osmos).coeff_out();"
+    set_action:
+      - lambda: "id(osmos).set_coeff_out(x);"
+
+  - platform: template
+    id: num_c_in
+    name: \"Pulses per liter tap"
+    internal: true
+    min_value: 100
+    max_value: 20000
+    step: 10
+    update_interval: 5s
+    lambda: "return id(osmos).coeff_in();"
+    set_action:
+      - lambda: "id(osmos).set_coeff_in(x);"
+
+  - platform: template
+    id: num_res1
+    name: \"Stage 1 capacity"
+    internal: true
+    min_value: 0
+    max_value: 30000
+    step: 100
+    update_interval: 5s
+    lambda: "return id(osmos).stage_limit(0);"
+    set_action:
+      - lambda: "id(osmos).set_stage_limit(0, (uint32_t) x);"
+
+  - platform: template
+    id: num_res2
+    name: \"Stage 2 capacity"
+    internal: true
+    min_value: 0
+    max_value: 30000
+    step: 100
+    update_interval: 5s
+    lambda: "return id(osmos).stage_limit(1);"
+    set_action:
+      - lambda: "id(osmos).set_stage_limit(1, (uint32_t) x);"
+
+  - platform: template
+    id: num_res3
+    name: \"Stage 3 capacity"
+    internal: true
+    min_value: 0
+    max_value: 30000
+    step: 100
+    update_interval: 5s
+    lambda: "return id(osmos).stage_limit(2);"
+    set_action:
+      - lambda: "id(osmos).set_stage_limit(2, (uint32_t) x);"
+
+  - platform: template
+    id: num_res4
+    name: \"Membrane capacity"
+    internal: true
+    min_value: 0
+    max_value: 30000
+    step: 100
+    update_interval: 5s
+    lambda: "return id(osmos).stage_limit(3);"
+    set_action:
+      - lambda: "id(osmos).set_stage_limit(3, (uint32_t) x);"
+
+  - platform: template
+    id: num_res5
+    name: \"Postfilter capacity"
+    internal: true
+    min_value: 0
+    max_value: 30000
+    step: 100
+    update_interval: 5s
+    lambda: "return id(osmos).stage_limit(4);"
+    set_action:
+      - lambda: "id(osmos).set_stage_limit(4, (uint32_t) x);"
+
+  - platform: template
+    id: num_tds_factor
+    name: \"TDS factor"
+    internal: true
+    min_value: 0.2
+    max_value: 3.0
+    step: 0.01
+    update_interval: 5s
+    lambda: "return id(osmos).tds_factor();"
+    set_action:
+      - lambda: "id(osmos).set_tds_factor(x);"
+
+  - platform: template
+    id: num_tds_offset
+    name: \"TDS offset"
+    internal: true
+    min_value: -200
+    max_value: 200
+    step: 1
+    update_interval: 5s
+    lambda: "return id(osmos).tds_offset();"
+    set_action:
+      - lambda: "id(osmos).set_tds_offset(x);"
+
+  - platform: template
+    id: num_timeout
+    name: \"Display timeout"
+    internal: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    update_interval: 5s
+    lambda: "return id(osmos).display_timeout_min();"
+    set_action:
+      - lambda: "id(osmos).set_display_timeout_min((uint16_t) x);"
+
+  - platform: template
+    id: num_contrast
+    name: \"Display brightness"
+    internal: true
+    optimistic: true
+    restore_value: true
+    initial_value: 100
+    min_value: 10
+    max_value: 100
+    step: 5
+    on_value:
+      - lambda: "id(oled).set_contrast(x / 100.0f);"
+
+# ------------------------------- МЕНЮ ----------------------------------------
+graphical_display_menu:
+  - id: settings_menu
+    font: f_tiny
+    active: false
+    # rotary: короткий клик листает пункты и меняет значение,
+    # удержание входит/подтверждает, двойной клик отменяет.
+    mode: rotary
+    items:
+      # --- Калибровка ---
+      - type: menu
+        text: "Калибровка"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: label
+            text: !lambda |-
+              if (id(osmos).calibrating())
+                return std::string("Идёт: ") + std::to_string(id(osmos).calibration_pulses()) + " имп";
+              return std::string("Готова к пуску");
+          - type: command
+            text: "Пуск (пролить 1 л)"
+            on_value:
+              - lambda: "id(osmos).calibration_start();"
+          - type: command
+            text: "Готово — 1 л налит"
+            on_value:
+              - lambda: "id(osmos).calibration_finish(1.0f);"
+          - type: command
+            text: "Отмена"
+            on_value:
+              - lambda: "id(osmos).calibration_cancel();"
+          - type: number
+            text: "Имп/л чистая"
+            number: num_c_out
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "Имп/л вход"
+            number: num_c_in
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+
+      # --- Ресурс ступеней ---
+      - type: menu
+        text: "Ресурс, л"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: number
+            text: "1 механика"
+            number: num_res1
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "2 уголь GAC"
+            number: num_res2
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "3 уголь CTO"
+            number: num_res3
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "4 мембрана"
+            number: num_res4
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "5 постфильтр"
+            number: num_res5
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+
+      # --- Отметка о замене ---
+      - type: menu
+        text: "Замена фильтра"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: command
+            text: "Заменил 1"
+            on_value:
+              - lambda: "id(osmos).reset_stage(0);"
+          - type: command
+            text: "Заменил 2"
+            on_value:
+              - lambda: "id(osmos).reset_stage(1);"
+          - type: command
+            text: "Заменил 3"
+            on_value:
+              - lambda: "id(osmos).reset_stage(2);"
+          - type: command
+            text: "Заменил 4"
+            on_value:
+              - lambda: "id(osmos).reset_stage(3);"
+          - type: command
+            text: "Заменил 5"
+            on_value:
+              - lambda: "id(osmos).reset_stage(4);"
+
+      # --- TDS ---
+      - type: menu
+        text: "TDS"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: number
+            text: "Множитель"
+            number: num_tds_factor
+            format: "%.2f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "Смещение"
+            number: num_tds_offset
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: command
+            text: "Сброс за сутки"
+            on_value:
+              - lambda: "id(osmos).reset_day_stats();"
+
+      # --- Дисплей ---
+      - type: menu
+        text: "Дисплей"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: number
+            text: "Таймаут, мин"
+            number: num_timeout
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+          - type: number
+            text: "Яркость, %"
+            number: num_contrast
+            format: "%.0f"
+            on_enter:
+              - lambda: "id(menu_editing) = true;"
+            on_leave:
+              - lambda: "id(menu_editing) = false;"
+
+      # --- Сервис ---
+      - type: menu
+        text: "Сервис"
+        on_enter:
+          - lambda: "id(menu_depth) += 1;"
+        on_leave:
+          - lambda: "if (id(menu_depth) > 0) id(menu_depth) -= 1;"
+        items:
+          - type: back
+            text: "< Назад"
+          - type: label
+            text: !lambda |-
+              return std::string("Наработка ") + id(osmos).uptime_str();
+          - type: label
+            text: !lambda |-
+              return std::string("Вход ") + std::to_string((int) id(osmos).total_in()) + " л";
+          - type: label
+            text: !lambda |-
+              return std::string("Чистая ") + std::to_string((int) id(osmos).total_out()) + " л";
+          - type: command
+            text: "Обнулить счётчики"
+            on_value:
+              - lambda: "id(osmos).reset_totals();"
+
+      - type: command
+        text: "Выход"
+        on_value:
+          - display_menu.hide: settings_menu
+
+# ------------------------------ ДИСПЛЕЙ --------------------------------------
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    model: "SSD1306 128x32"
+    address: ${i2c_address}
+    update_interval: 200ms
+    lambda: |-
+      // Дисплей погашен по таймауту — ничего не рисуем.
+      if (!id(ui_display_on))
+        return;
+
+      const uint32_t now = millis();
+      const int page = id(ui_page);
+
+      // --- Навигационные стрелки: показывают, что страница есть слева/справа ---
+      if (page > 0) {
+        it.line(3, 13, 0, 16);
+        it.line(0, 16, 3, 19);
+      }
+      if (page < 5) {
+        it.line(124, 13, 127, 16);
+        it.line(127, 16, 124, 19);
+      }
+
+      switch (page) {
+
+        // ===================== 1. Состояние фильтров =====================
+        case 0: {
+          for (int i = 0; i < 5; i++) {
+            const int x = 7 + i * 23;
+            const auto level = id(osmos).stage_level(i);
+            const float left = id(osmos).stage_remaining(i);
+            // Цифра ступени гаснет в такт со своей шкалой.
+            if (smart_osmos::stage_visible(level, now))
+              it.printf(x + 10, 1, id(f_small), display::TextAlign::TOP_CENTER, "%d", i + 1);
+            smart_osmos::draw_stage_bar(&it, x, 17, 20, 11, left, level, now);
+          }
+          break;
+        }
+
+        // ========================= 2. Показания TDS =======================
+        case 1: {
+          it.line(64, 0, 64, 31);
+          it.printf(34, 0, id(f_big), display::TextAlign::TOP_CENTER, "%.0f", id(osmos).tds());
+          const float avg = id(osmos).tds_day_avg();
+          if (std::isnan(avg))
+            it.print(34, 21, id(f_tiny), display::TextAlign::TOP_CENTER, "сут: --");
+          else
+            it.printf(34, 21, id(f_tiny), display::TextAlign::TOP_CENTER, "сут %.0f", avg);
+          it.graph(68, 2, id(graph_tds));
+          break;
+        }
+
+        // ======================= 3. Текущий расход ========================
+        case 2: {
+          it.line(64, 0, 64, 31);
+          // Водопровод
+          it.print(34, 0, id(f_icon), display::TextAlign::TOP_CENTER, "\U000F058F");
+          it.printf(34, 12, id(f_small), display::TextAlign::TOP_CENTER, "%.2f", id(osmos).flow_in());
+          it.printf(34, 23, id(f_tiny), display::TextAlign::TOP_CENTER, "%.2f л/мин", id(osmos).minute_in());
+          // Чистая
+          it.print(95, 0, id(f_icon), display::TextAlign::TOP_CENTER, "\U000F1504");
+          it.printf(95, 12, id(f_small), display::TextAlign::TOP_CENTER, "%.2f", id(osmos).flow_out());
+          it.printf(95, 23, id(f_tiny), display::TextAlign::TOP_CENTER, "%.2f л/мин", id(osmos).minute_out());
+          break;
+        }
+
+        // ================== 4. Сохранённые показания: TDS =================
+        case 3: {
+          it.print(6, 0, id(f_icon), "\U000F058E");
+          it.print(21, 2, id(f_tiny), "TDS за сутки, ppm");
+          const float lo = id(osmos).tds_day_min();
+          const float av = id(osmos).tds_day_avg();
+          const float hi = id(osmos).tds_day_max();
+          if (std::isnan(av))
+            it.print(6, 12, id(f_tiny), "мин / срд / макс:  нет данных");
+          else
+            it.printf(6, 12, id(f_tiny), "мин %.0f  срд %.0f  макс %.0f", lo, av, hi);
+          it.printf(6, 22, id(f_tiny), "Прочистка: %.1f %%", id(osmos).purification_ratio());
+          break;
+        }
+
+        // ============= 5. Сохранённые показания: объём и замены ===========
+        case 4: {
+          it.printf(6, 0, id(f_tiny), "Объём %.0f / %.0f л",
+                    id(osmos).total_in(), id(osmos).total_out());
+          it.print(6, 11, id(f_icon), "\U000F00ED");
+          // Пять ступеней не помещаются: показываем их парами, меняя окно раз в 4 с.
+          const int window = (now / 4000) % 3;
+          const int first = window * 2;
+          for (int row = 0; row < 2; row++) {
+            const int stage = first + row;
+            if (stage >= 5)
+              break;
+            it.printf(22, 11 + row * 10, id(f_tiny), "Ф%d  замена %s", stage + 1,
+                      id(osmos).stage_date_str(stage).c_str());
+          }
+          break;
+        }
+
+        // ========================= 6. Настройки ===========================
+        case 5: {
+          const auto bounds = display::Rect(6, 0, 116, 32);
+          id(settings_menu).draw(&it, &bounds);
+          break;
+        }
+      }
+
+# ------------------------- НАВИГАЦИЯ ОДНОЙ КНОПКОЙ ---------------------------
+script:
+  # Любое нажатие продлевает работу дисплея и будит его.
+  - id: ui_touch
+    then:
+      - lambda: |-
+          id(ui_last_activity) = millis();
+          if (!id(ui_display_on)) {
+            id(ui_display_on) = true;
+            id(oled).turn_on();
+          }
+
+  # Короткий клик — следующая страница / следующий пункт меню.
+  - id: nav_next
+    then:
+      - if:
+          condition:
+            display_menu.is_active: settings_menu
+          then:
+            - display_menu.down: settings_menu
+          else:
+            - lambda: "if (id(ui_page) < 5) id(ui_page) += 1;"
+
+  # Двойной клик — назад: отмена правки, выход из подменю, предыдущая страница.
+  - id: nav_back
+    then:
+      - if:
+          condition:
+            display_menu.is_active: settings_menu
+          then:
+            - if:
+                condition:
+                  lambda: "return id(menu_editing);"
+                then:
+                  - display_menu.left: settings_menu
+                else:
+                  - if:
+                      condition:
+                        lambda: "return id(menu_depth) > 0;"
+                      then:
+                        - display_menu.show_main: settings_menu
+                        - lambda: "id(menu_depth) = 0;"
+                      else:
+                        - display_menu.hide: settings_menu
+          else:
+            - lambda: "if (id(ui_page) > 0) id(ui_page) -= 1;"
+
+  # Удержание — действие: вход в меню, вход в пункт, подтверждение значения.
+  - id: nav_action
+    then:
+      - if:
+          condition:
+            display_menu.is_active: settings_menu
+          then:
+            - display_menu.enter: settings_menu
+          else:
+            - if:
+                condition:
+                  lambda: "return id(ui_page) == 5;"
+                then:
+                  - lambda: "id(menu_depth) = 0;"
+                  - display_menu.show: settings_menu
+
+# --------------------------- ПЕРИОДИЧЕСКИЕ ЗАДАЧИ ----------------------------
+interval:
+  # Поток данных для мобильного приложения (как в исходной прошивке — 500 мс).
+  # Значение обновляется всегда, чтобы обычное чтение характеристики тоже
+  # возвращало свежие данные; уведомление шлём только по запросу приложения.
+  - interval: 500ms
+    then:
+      - if:
+          condition:
+            lambda: "return id(osmos).take_config_request();"
+          then:
+            - ble_server.characteristic.set_value:
+                id: char_app
+                value: !lambda "return id(osmos).config_bytes();"
+            - ble_server.characteristic.notify:
+                id: char_app
+          else:
+            - ble_server.characteristic.set_value:
+                id: char_app
+                value: !lambda "return id(osmos).realtime_bytes();"
+            - if:
+                condition:
+                  lambda: "return id(osmos).stream_enabled();"
+                then:
+                  - ble_server.characteristic.notify:
+                      id: char_app
+
+  # Расширенная телеметрия для интеграции Home Assistant.
+  - interval: 2s
+    then:
+      - ble_server.characteristic.set_value:
+          id: char_ext
+          value: !lambda "return id(osmos).ext_bytes();"
+      - ble_server.characteristic.notify:
+          id: char_ext
+
+  # Конфигурация меняется редко — обновляем раз в полминуты.
+  - interval: 30s
+    then:
+      - ble_server.characteristic.set_value:
+          id: char_ext_cfg
+          value: !lambda "return id(osmos).ext_config_bytes();"
+      - ble_server.characteristic.notify:
+          id: char_ext_cfg
+
+  # Гашение дисплея при бездействии кнопки.
+  - interval: 10s
+    then:
+      - lambda: |-
+          const uint32_t timeout = (uint32_t) id(osmos).display_timeout_min() * 60000UL;
+          if (id(ui_display_on) && (millis() - id(ui_last_activity)) > timeout) {
+            id(ui_display_on) = false;
+            id(oled).turn_off();
+          }
