@@ -1,0 +1,23 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Smart Osmos",
+        "description": "Выберите контроллер обратного осмоса, который нужно добавить.",
+        "data": {
+          "address": "Устройство"
+        }
+      },
+      "confirm": {
+        "title": "Smart Osmos",
+        "description": "Добавить {name} ({address}) в Home Assistant?"
+      }
+    },
+    "abort": {
+      "already_configured": "Этот контроллер уже добавлен.",
+      "no_devices_found": "Поблизости нет контроллера Smart Osmos. Убедитесь, что он включён и находится в зоне действия Bluetooth.",
+      "not_supported": "Это Bluetooth-устройство не является контроллером Smart Osmos."
+    }
+  }
+}

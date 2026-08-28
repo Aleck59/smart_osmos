@@ -1,0 +1,89 @@
+name: Прошивка ESPHome
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "esphome/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "esphome/**"
+      - ".github/workflows/firmware.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Проверка конфигурации
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Установить ESPHome
+        run: pip install --upgrade esphome
+
+      - name: Проверить конфигурацию
+        run: esphome config esphome/osmos-h2.yaml
+
+  build:
+    name: Сборка прошивки
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Тулчейн ESP-IDF весит сотни мегабайт — без кэша каждая сборка
+      # тратит на его скачивание больше времени, чем на саму компиляцию.
+      - name: Кэш PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            esphome/.esphome
+          key: pio-${{ runner.os }}-${{ hashFiles('esphome/osmos-h2.yaml') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Установить ESPHome
+        run: pip install --upgrade esphome
+
+      - name: Собрать прошивку
+        run: esphome compile esphome/osmos-h2.yaml
+
+      - name: Собрать артефакты
+        id: collect
+        run: |
+          set -euo pipefail
+          out=dist
+          mkdir -p "$out"
+          build_dir=$(find esphome/.esphome/build -maxdepth 1 -mindepth 1 -type d | head -1)
+          echo "Каталог сборки: $build_dir"
+          find "$build_dir" -name 'firmware*.bin' -exec cp -v {} "$out/" \;
+          cp esphome/osmos-h2.yaml "$out/"
+          ls -la "$out"
+
+      - name: Выложить артефакты
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-osmos-firmware
+          path: dist/
+          if-no-files-found: error
+
+      - name: Приложить прошивку к релизу
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

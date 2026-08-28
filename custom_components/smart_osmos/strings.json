@@ -1,0 +1,23 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Smart Osmos",
+        "description": "Choose the reverse osmosis controller to add.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "confirm": {
+        "title": "Smart Osmos",
+        "description": "Add {name} ({address}) to Home Assistant?"
+      }
+    },
+    "abort": {
+      "already_configured": "This controller is already set up.",
+      "no_devices_found": "No Smart Osmos controller found nearby. Make sure it is powered on and within Bluetooth range.",
+      "not_supported": "This Bluetooth device is not a Smart Osmos controller."
+    }
+  }
+}
