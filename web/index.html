@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Osmos — прошивка по Bluetooth</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #fff; --fg: #12181f; --muted: #5b6672;
+    --line: #dfe5ec; --accent: #1e88e5; --accent-fg: #fff;
+    --ok: #2e7d32; --err: #c62828; --warn: #e65100;
+    --code-bg: #eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161b; --card: #1a1f26; --fg: #e6ebf1; --muted: #9aa7b4;
+      --line: #2b3440; --accent: #4fc3f7; --accent-fg: #06121c;
+      --ok: #81c784; --err: #ef9a9a; --warn: #ffb74d;
+      --code-bg: #10151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1 svg { flex: none; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 15px; margin: 0 0 12px; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--muted);
+  }
+  label { display: block; font-weight: 600; margin: 0 0 6px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  input[type=text], input[type=password], input[type=number], input[type=file] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 160px; min-width: 0; }
+  button {
+    font: inherit; font-weight: 600; padding: 11px 20px; border-radius: 8px;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); }
+  button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  progress { width: 100%; height: 12px; margin: 14px 0 6px; }
+  .stats { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
+  #log {
+    margin: 0; padding: 12px; background: var(--code-bg); border-radius: 8px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  #log .ok { color: var(--ok); }
+  #log .err { color: var(--err); }
+  #log .warn { color: var(--warn); }
+  .banner {
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
+    border: 1px solid var(--line); background: var(--card);
+  }
+  .banner.err { border-color: var(--err); }
+  .banner code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  details summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+  details[open] summary { margin-bottom: 12px; }
+  dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 13px; }
+  dl.meta dt { color: var(--muted); }
+  dl.meta dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>
+    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+      <path d="M13 1.5 C13 1.5 4.5 11 4.5 16.2 A8.5 8.5 0 0 0 21.5 16.2 C21.5 11 13 1.5 13 1.5 Z"
+            fill="var(--accent)"/>
+      <g fill="var(--card)">
+        <rect x="7.5" y="13" width="11" height="1.9" rx=".95"/>
+        <rect x="7.5" y="16.4" width="11" height="1.9" rx=".95"/>
+        <rect x="7.5" y="19.8" width="11" height="1.9" rx=".95"/>
+      </g>
+    </svg>
+    Smart Osmos — прошивка по Bluetooth
+  </h1>
+  <p class="sub">Обновление контроллера ESP32-H2 прямо из браузера, без проводов и без Python.</p>
+
+  <div class="banner err" id="unsupported" hidden>
+    <strong>Браузер не поддерживает Web Bluetooth.</strong>
+    <p class="hint" id="unsupported-why"></p>
+  </div>
+
+  <div class="card">
+    <h2>1. Файл прошивки</h2>
+    <input type="file" id="file" accept=".bin">
+    <p class="hint">
+      Нужен именно <code>firmware.ota.bin</code> — не <code>firmware.bin</code>
+      и не <code>firmware.factory.bin</code>. Его выкладывает сборка GitHub Actions
+      в артефакт <code>smart-osmos-firmware</code>.
+    </p>
+    <dl class="meta" id="fwinfo" hidden>
+      <dt>Проект</dt><dd id="fw-project">—</dd>
+      <dt>Версия</dt><dd id="fw-version">—</dd>
+      <dt>ESP-IDF</dt><dd id="fw-idf">—</dd>
+      <dt>Размер</dt><dd id="fw-size">—</dd>
+      <dt>CRC-32</dt><dd id="fw-crc">—</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>2. Устройство</h2>
+    <div class="row">
+      <div>
+        <label for="name">Имя устройства</label>
+        <input type="text" id="name" value="SMART OSMOS">
+      </div>
+      <div>
+        <label for="pw">Пароль обновления</label>
+        <input type="password" id="pw" value="OeN12345">
+      </div>
+    </div>
+    <p class="hint">
+      Имя и пароль заданы в <code>substitutions</code> файла <code>osmos-h2.yaml</code>
+      (<code>ble_name</code> и <code>ota_password</code>).
+    </p>
+    <details>
+      <summary>Дополнительно</summary>
+      <div class="row">
+        <div>
+          <label for="chunk">Размер блока, байт</label>
+          <input type="number" id="chunk" value="500" min="64" max="500" step="4">
+          <p class="hint">Уменьшите до 180, если запись обрывается с ошибкой.</p>
+        </div>
+        <div>
+          <label for="window">Блоков в полёте</label>
+          <input type="number" id="window" value="8" min="1" max="16">
+          <p class="hint">Больше — быстрее, но растёт риск переполнения стека BLE.</p>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>3. Прошивка</h2>
+    <div class="actions">
+      <button class="primary" id="go" disabled>Подключиться и прошить</button>
+      <button class="ghost" id="abort" hidden>Прервать</button>
+    </div>
+    <progress id="bar" value="0" max="100" hidden></progress>
+    <div class="stats" hidden id="stats">
+      <span id="pct">0 %</span><span id="rate"></span><span id="eta"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Журнал</h2>
+    <pre id="log">Выберите файл прошивки, чтобы начать.</pre>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ── Протокол esp32_ble_ota ────────────────────────────────────────────────────
+// Значения повторяют компонент прошивки: components/esp32_ble_ota/ota.py
+// и esp32_ble_ota.cpp. Обратите внимание на разные префиксы UUID у DATA и
+// STATUS — это не опечатка, так объявлено в компоненте.
+const SERVICE_UUID = "424f5441-0001-1000-8000-00805f9b34fb";
+const CONTROL_UUID = "424f5441-0002-1000-8000-00805f9b34fb";
+const DATA_UUID    = "424f5442-0003-1000-8000-00805f9b34fb";
+const STATUS_UUID  = "424f5443-0004-1000-8000-00805f9b34fb";
+
+const CTRL_BEGIN = 0x01, CTRL_ABORT = 0x02, CTRL_COMMIT = 0x03;
+const ST_ACK = 0x01, ST_NACK = 0x02, ST_PROGRESS = 0x03, ST_DONE = 0x04, ST_ERROR = 0x05;
+const BEGIN_ACK_SEQ = 0xFFFF;   // ACK на OTA_BEGIN приходит с этим номером
+
+const ERRORS = {
+  0x01: "не сошлась контрольная сумма блока",
+  0x02: "нарушен порядок блоков",
+  0x03: "ошибка записи во flash",
+  0x04: "не сошлась контрольная сумма образа",
+  0x05: "размер записанного не совпал с заявленным",
+  0x06: "устройство не смогло открыть раздел OTA",
+  0x07: "истекло время ожидания данных",
+  0x08: "неверный пароль обновления",
+  0x0f: "внутренняя ошибка устройства",
+};
+
+const ESP_IMAGE_MAGIC = 0xE9;        // первый байт образа
+// esp_app_desc_t.magic_word по смещению 32. В сообщении об ошибке эталонного
+// загрузчика указано 0xABCD5AA5 — это опечатка, ESP-IDF пишет 0xABCD5432.
+const APP_DESC_MAGIC = 0xABCD5432;
+const MIN_SIZE = 4096;
+const ACK_TIMEOUT_MS = 45000;
+
+// ── CRC-32 (IEEE 802.3, отражённый полином 0xEDB88320) ────────────────────────
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// ── Мелкие помощники ──────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const hex8 = (n) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
+
+function log(msg, cls) {
+  const el = $("log");
+  const line = document.createElement("span");
+  if (cls) line.className = cls;
+  line.textContent = msg + "\n";
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function cstr(bytes, from, len) {
+  const slice = bytes.subarray(from, from + len);
+  const end = slice.indexOf(0);
+  return new TextDecoder("ascii").decode(end === -1 ? slice : slice.subarray(0, end));
+}
+
+// ── Очередь уведомлений STATUS ────────────────────────────────────────────────
+class StatusQueue {
+  constructor() { this.items = []; this.waiters = []; }
+  push(data) {
+    const w = this.waiters.shift();
+    if (w) w.resolve(data); else this.items.push(data);
+  }
+  fail(err) {
+    while (this.waiters.length) this.waiters.shift().reject(err);
+  }
+  next(timeoutMs) {
+    if (this.items.length) return Promise.resolve(this.items.shift());
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject };
+      this.waiters.push(waiter);
+      setTimeout(() => {
+        const i = this.waiters.indexOf(waiter);
+        if (i !== -1) {
+          this.waiters.splice(i, 1);
+          reject(new Error("устройство не ответило за " + (timeoutMs / 1000) + " с"));
+        }
+      }, timeoutMs);
+    });
+  }
+}
+
+// ── Разбор и проверка образа ──────────────────────────────────────────────────
+function validateFirmware(bytes) {
+  if (bytes.length < MIN_SIZE)
+    throw new Error("файл слишком мал (" + bytes.length + " Б) — это не образ прошивки");
+  if (bytes[0] !== ESP_IMAGE_MAGIC)
+    throw new Error(
+      "неверная сигнатура образа 0x" + bytes[0].toString(16).toUpperCase() +
+      " (ожидается 0xE9). Похоже, выбран не тот файл: нужен firmware.ota.bin");
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = view.getUint32(32, true);
+  if (magic !== APP_DESC_MAGIC)
+    throw new Error(
+      "сигнатура esp_app_desc " + hex8(magic) + " (ожидается " + hex8(APP_DESC_MAGIC) +
+      ") — файл повреждён или это не образ приложения ESP-IDF");
+
+  return {
+    version: cstr(bytes, 48, 32),
+    project: cstr(bytes, 80, 32),
+    idf: cstr(bytes, 144, 32),
+  };
+}
+
+// ── Состояние страницы ────────────────────────────────────────────────────────
+let firmware = null;      // Uint8Array
+let aborting = false;
+let busy = false;
+
+function setBusy(on) {
+  busy = on;
+  $("go").disabled = on || !firmware;
+  $("abort").hidden = !on;
+  for (const id of ["file", "name", "pw", "chunk", "window"]) $(id).disabled = on;
+}
+
+$("file").addEventListener("change", async (ev) => {
+  const file = ev.target.files[0];
+  firmware = null;
+  $("fwinfo").hidden = true;
+  $("go").disabled = true;
+  if (!file) return;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const info = validateFirmware(bytes);
+    firmware = bytes;
+    $("fw-project").textContent = info.project || "—";
+    $("fw-version").textContent = info.version || "—";
+    $("fw-idf").textContent = info.idf || "—";
+    $("fw-size").textContent = bytes.length.toLocaleString("ru-RU") + " Б";
+    $("fw-crc").textContent = hex8(crc32(bytes));
+    $("fwinfo").hidden = false;
+    $("go").disabled = false;
+    log("Образ проверен: " + (info.project || "?") + " v" + (info.version || "?") +
+        ", " + bytes.length.toLocaleString("ru-RU") + " Б", "ok");
+  } catch (err) {
+    log("Файл отклонён: " + err.message, "err");
+  }
+});
+
+$("abort").addEventListener("click", () => {
+  aborting = true;
+  log("Прерывание по запросу…", "warn");
+});
+
+$("go").addEventListener("click", () => flash().catch((err) => {
+  log("Ошибка: " + err.message, "err");
+  setBusy(false);
+}));
+
+// ── Основная процедура ────────────────────────────────────────────────────────
+async function flash() {
+  if (!firmware) return;
+  aborting = false;
+  setBusy(true);
+  $("bar").hidden = false;
+  $("stats").hidden = false;
+  $("bar").value = 0;
+
+  const chunkSize = Math.max(64, Math.min(500, +$("chunk").value | 0));
+  const windowSize = Math.max(1, Math.min(16, +$("window").value | 0));
+  const namePrefix = $("name").value.trim();
+  const password = new TextEncoder().encode($("pw").value);
+
+  log("Выбор устройства…");
+  const device = await navigator.bluetooth.requestDevice({
+    filters: namePrefix ? [{ namePrefix }] : undefined,
+    acceptAllDevices: namePrefix ? undefined : true,
+    optionalServices: [SERVICE_UUID],
+  });
+  log("Выбрано: " + (device.name || device.id));
+
+  const queue = new StatusQueue();
+  let rebooted = false;
+  device.addEventListener("gattserverdisconnected", () => {
+    if (!rebooted) queue.fail(new Error("устройство отключилось"));
+  });
+
+  let server;
+  try {
+    log("Подключение…");
+    server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    const control = await service.getCharacteristic(CONTROL_UUID);
+    const data = await service.getCharacteristic(DATA_UUID);
+    const status = await service.getCharacteristic(STATUS_UUID);
+
+    status.addEventListener("characteristicvaluechanged", (ev) => {
+      queue.push(new Uint8Array(ev.target.value.buffer));
+    });
+    await status.startNotifications();
+    log("Соединение установлено, канал STATUS открыт.", "ok");
+
+    // Пропускаем информационные PROGRESS, но показываем их в журнале.
+    async function waitStatus() {
+      for (;;) {
+        const pkt = await queue.next(ACK_TIMEOUT_MS);
+        if (pkt[0] === ST_PROGRESS) {
+          log("  устройство: записано " + pkt[1] + " %");
+          continue;
+        }
+        return pkt;
+      }
+    }
+
+    // ── OTA_BEGIN ────────────────────────────────────────────────────────────
+    const total = firmware.length;
+    const totalCrc = crc32(firmware);
+    const begin = new Uint8Array(10 + password.length);
+    const bv = new DataView(begin.buffer);
+    begin[0] = CTRL_BEGIN;
+    bv.setUint32(1, total, true);
+    bv.setUint32(5, totalCrc, true);
+    begin[9] = password.length;
+    begin.set(password, 10);
+
+    log("→ OTA_BEGIN: " + total.toLocaleString("ru-RU") + " Б, CRC " + hex8(totalCrc));
+    await control.writeValueWithResponse(begin);
+
+    const ack = await waitStatus();
+    if (ack[0] === ST_ERROR) throw new Error(describe(ack[1]));
+    if (ack[0] !== ST_ACK) throw new Error("неожиданный ответ на OTA_BEGIN: " + dump(ack));
+    log("← сессия открыта", "ok");
+
+    // ── Передача блоков ──────────────────────────────────────────────────────
+    const totalChunks = Math.ceil(total / chunkSize);
+    const started = performance.now();
+    const retries = new Map();
+    let sent = 0, acked = 0;
+
+    const packet = (seq) => {
+      const payload = firmware.subarray(seq * chunkSize, (seq + 1) * chunkSize);
+      const pkt = new Uint8Array(8 + payload.length);
+      const dv = new DataView(pkt.buffer);
+      dv.setUint16(0, seq, true);
+      dv.setUint16(2, payload.length, true);
+      dv.setUint32(4, crc32(payload), true);
+      pkt.set(payload, 8);
+      return pkt;
+    };
+
+    while (acked < totalChunks) {
+      if (aborting) {
+        await control.writeValueWithResponse(new Uint8Array([CTRL_ABORT]));
+        throw new Error("прервано пользователем");
+      }
+
+      // Наполняем окно: BLE доставляет записи по порядку, поэтому устройство
+      // получит блоки строго последовательно, как оно и требует.
+      while (sent < totalChunks && sent - acked < windowSize) {
+        await data.writeValueWithoutResponse(packet(sent));
+        sent++;
+      }
+
+      const pkt = await waitStatus();
+
+      if (pkt[0] === ST_ACK) {
+        const seq = new DataView(pkt.buffer, pkt.byteOffset).getUint16(1, true);
+        acked = seq + 1;
+        updateProgress(acked, totalChunks, started, chunkSize);
+      } else if (pkt[0] === ST_NACK) {
+        const dv = new DataView(pkt.buffer, pkt.byteOffset);
+        const seq = dv.getUint16(1, true);
+        const code = pkt.length > 3 ? pkt[3] : 0xFF;
+        const n = (retries.get(seq) || 0) + 1;
+        retries.set(seq, n);
+        if (n > 3) throw new Error("блок " + seq + " отвергнут: " + describe(code));
+        log("← блок " + seq + " отвергнут (" + describe(code) + "), повтор " + n + "/3", "warn");
+        // Перезапускаем окно с проблемного блока: порядок для устройства критичен.
+        sent = seq;
+        acked = seq;
+        await sleep(50);
+      } else if (pkt[0] === ST_ERROR) {
+        throw new Error(describe(pkt[1]));
+      } else {
+        throw new Error("неожиданный пакет STATUS: " + dump(pkt));
+      }
+    }
+
+    // ── OTA_COMMIT ───────────────────────────────────────────────────────────
+    const secs = (performance.now() - started) / 1000;
+    log("Передано за " + secs.toFixed(0) + " с (" +
+        (total / secs / 1024).toFixed(1) + " КБ/с). → OTA_COMMIT");
+    rebooted = true;
+    await control.writeValueWithResponse(new Uint8Array([CTRL_COMMIT]));
+
+    const done = await waitStatus();
+    if (done[0] === ST_ERROR) throw new Error(describe(done[1]));
+    if (done[0] !== ST_DONE) throw new Error("вместо DONE пришло " + dump(done));
+
+    $("bar").value = 100;
+    $("pct").textContent = "100 %";
+    log("← DONE. Прошивка записана, устройство перезагружается.", "ok");
+  } finally {
+    try { if (server && server.connected) server.disconnect(); } catch (_) {}
+    setBusy(false);
+  }
+}
+
+function describe(code) {
+  return ERRORS[code] || ("код 0x" + (code || 0).toString(16).padStart(2, "0"));
+}
+
+function dump(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
+}
+
+function updateProgress(acked, totalChunks, started, chunkSize) {
+  const pct = Math.round((acked * 100) / totalChunks);
+  const elapsed = (performance.now() - started) / 1000;
+  $("bar").value = pct;
+  $("pct").textContent = pct + " %";
+  $("rate").textContent = ((acked * chunkSize) / Math.max(elapsed, 0.001) / 1024).toFixed(1) + " КБ/с";
+  const eta = ((totalChunks - acked) / Math.max(acked, 1)) * elapsed;
+  $("eta").textContent = "осталось ~" + Math.max(0, Math.round(eta)) + " с";
+}
+
+// ── Проверка окружения ────────────────────────────────────────────────────────
+(function checkSupport() {
+  if (navigator.bluetooth) return;
+  const why = !window.isSecureContext
+    ? "Страница открыта не в защищённом контексте. Web Bluetooth работает только по " +
+      "https:// или с http://localhost — открытие файла двойным щелчком (file://) не подходит."
+    : "Нужен Chrome, Edge или Opera на компьютере. Safari и Firefox Web Bluetooth не поддерживают. " +
+      "На Linux проверьте, что в chrome://flags включён #enable-web-bluetooth-new-permissions-backend.";
+  $("unsupported-why").textContent = why;
+  $("unsupported").hidden = false;
+  $("go").disabled = true;
+  $("file").disabled = true;
+})();
+</script>
+</body>
+</html>
