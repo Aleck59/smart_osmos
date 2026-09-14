@@ -145,6 +145,36 @@ python3 esp32_ble_ota_upload.py --device "SMART OSMOS" \
 Нужен рабочий Bluetooth-адаптер (встроенный, USB или ESPHome Bluetooth Proxy
 в зоне действия).
 
+<details>
+<summary>Если захочется подать репозиторий в каталог HACS</summary>
+
+Для каталога HACS требует заполнить About у репозитория на GitHub — без этого
+проверка `hacs/action` не проходит. Установке через «Custom repositories» это
+не мешает, поэтому в CI обе проверки сейчас отключены
+(`ignore: topics description` в `.github/workflows/hassfest.yml`).
+
+Чтобы подать репозиторий в каталог, откройте его страницу на GitHub, нажмите
+шестерёнку рядом с **About** и заполните:
+
+**Description**
+
+```
+Контроллер бытового обратного осмоса на ESP32-H2: прошивка ESPHome и интеграция Home Assistant по Bluetooth LE
+```
+
+**Topics** (только строчные буквы, цифры и дефисы)
+
+```
+home-assistant  hacs  hacs-integration  esphome  esp32  esp32h2
+bluetooth-low-energy  reverse-osmosis  water-quality  tds  custom-component
+```
+
+После этого уберите `topics description` из строки `ignore` в workflow — проверки
+снова начнут работать. Иконку нужно отправить отдельно, см.
+[brands/README.md](brands/README.md).
+
+</details>
+
 ### Что появится
 
 * **Датчики**: TDS (текущий, минимум/среднее/максимум за сутки), расход по обеим
