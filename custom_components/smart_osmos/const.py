@@ -19,6 +19,7 @@ CHAR_EXT_CONFIG_UUID: Final = "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 
 # --- Ступени ------------------------------------------------------------------
 STAGE_COUNT: Final = 5
+STAGES: Final = range(1, STAGE_COUNT + 1)
 STAGE_NAMES: Final = {
     1: "Механическая очистка",
     2: "Уголь GAC",

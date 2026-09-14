@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from homeassistant.components.binary_sensor import (
@@ -16,32 +15,28 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import STAGE_COUNT
 from .coordinator import SmartOsmosConfigEntry, SmartOsmosCoordinator
-from .entity import SmartOsmosEntity
+from .entity import (
+    SmartOsmosDescription,
+    SmartOsmosEntity,
+    async_add_described_entities,
+)
+
+PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
-class SmartOsmosBinaryDescription(BinarySensorEntityDescription):
-    """Описание двоичного датчика с функцией вычисления состояния."""
-
-    value_fn: Callable[[SmartOsmosCoordinator], bool | None]
-    # Датчик связи должен оставаться доступным, когда связи нет.
-    available_offline: bool = False
+class SmartOsmosBinaryDescription(BinarySensorEntityDescription, SmartOsmosDescription):
+    """Описание двоичного датчика Smart Osmos."""
 
 
-def _needs_replacement(coordinator: SmartOsmosCoordinator) -> bool | None:
-    """Есть ли ступень, ресурс которой практически исчерпан."""
+def _any_stage_below(
+    coordinator: SmartOsmosCoordinator, threshold: float
+) -> bool | None:
+    """Есть ли ступень, остаток ресурса которой ниже порога в процентах."""
     remaining = coordinator.value("r")
     if not isinstance(remaining, list) or len(remaining) < STAGE_COUNT:
         return None
-    return any(value <= 5 for value in remaining)
-
-
-def _low_resource(coordinator: SmartOsmosCoordinator) -> bool | None:
-    """Есть ли ступень с остатком менее 20 %."""
-    remaining = coordinator.value("r")
-    if not isinstance(remaining, list) or len(remaining) < STAGE_COUNT:
-        return None
-    return any(value < 20 for value in remaining)
+    return any(value <= threshold for value in remaining)
 
 
 BINARY_SENSORS: tuple[SmartOsmosBinaryDescription, ...] = (
@@ -51,21 +46,24 @@ BINARY_SENSORS: tuple[SmartOsmosBinaryDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
         available_offline=True,
-        value_fn=lambda c: c.connected,
+        value_fn=lambda c: c.available,
     ),
     SmartOsmosBinaryDescription(
         key="replacement_needed",
+        icon="mdi:filter-remove",
         name="Требуется замена фильтра",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        value_fn=_needs_replacement,
+        value_fn=lambda c: _any_stage_below(c, 5),
     ),
     SmartOsmosBinaryDescription(
         key="low_resource",
+        icon="mdi:filter-variant-remove",
         name="Ресурс на исходе",
-        value_fn=_low_resource,
+        value_fn=lambda c: _any_stage_below(c, 20),
     ),
     SmartOsmosBinaryDescription(
         key="calibrating",
+        icon="mdi:beaker-outline",
         name="Идёт калибровка",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda c: bool(c.value("cal")),
@@ -79,10 +77,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Создать двоичные датчики."""
-    coordinator = entry.runtime_data
-    async_add_entities(
-        SmartOsmosBinarySensor(coordinator, description)
-        for description in BINARY_SENSORS
+    async_add_described_entities(
+        entry, async_add_entities, SmartOsmosBinarySensor, BINARY_SENSORS
     )
 
 
@@ -92,13 +88,6 @@ class SmartOsmosBinarySensor(SmartOsmosEntity, BinarySensorEntity):
     entity_description: SmartOsmosBinaryDescription
 
     @property
-    def available(self) -> bool:
-        """Датчик связи доступен всегда, остальные — только при соединении."""
-        if self.entity_description.available_offline:
-            return True
-        return super().available
-
-    @property
     def is_on(self) -> bool | None:
         """Текущее состояние."""
-        return self.entity_description.value_fn(self.coordinator)
+        return self.value

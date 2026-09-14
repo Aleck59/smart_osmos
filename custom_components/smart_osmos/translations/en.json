@@ -19,5 +19,27 @@
       "no_devices_found": "No Smart Osmos controller found nearby. Make sure it is powered on and within Bluetooth range.",
       "not_supported": "This Bluetooth device is not a Smart Osmos controller."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Osmos settings",
+        "description": "Values are read from the controller. Only the ones you change are written back.",
+        "data": {
+          "pulses_per_liter_in": "Pulses per liter (tap water)",
+          "pulses_per_liter_out": "Pulses per liter (clean water)",
+          "tds_factor": "TDS calibration factor",
+          "tds_offset": "TDS calibration offset",
+          "stage_1_limit": "Stage 1 — sediment: capacity",
+          "stage_2_limit": "Stage 2 — GAC carbon: capacity",
+          "stage_3_limit": "Stage 3 — CTO carbon: capacity",
+          "stage_4_limit": "Stage 4 — RO membrane: capacity",
+          "stage_5_limit": "Stage 5 — post filter: capacity"
+        }
+      }
+    },
+    "abort": {
+      "not_connected": "No Bluetooth connection to the controller. Wait for it to reconnect and try again."
+    }
   }
 }
