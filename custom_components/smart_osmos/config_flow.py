@@ -8,11 +8,23 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 import voluptuous as vol
 
 from .const import DEFAULT_LOCAL_NAME, DOMAIN, SERVICE_UUID
+from .settings import SETTINGS
 
 
 def _is_osmos(info: BluetoothServiceInfoBleak) -> bool:
@@ -26,6 +38,12 @@ class SmartOsmosConfigFlow(ConfigFlow, domain=DOMAIN):
     """Добавление устройства: автообнаружение по BLE или выбор из списка."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> SmartOsmosOptionsFlow:
+        """Вернуть форму настроек устройства."""
+        return SmartOsmosOptionsFlow()
 
     def __init__(self) -> None:
         """Подготовить состояние мастера."""
@@ -92,4 +110,57 @@ class SmartOsmosConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {vol.Required(CONF_ADDRESS): vol.In(self._discovered)}
             ),
+        )
+
+
+class SmartOsmosOptionsFlow(OptionsFlow):
+    """Все настройки контроллера одной формой.
+
+    Значения не хранятся в Home Assistant: форма читает их прямо из устройства
+    и отправляет обратно только то, что изменилось.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Показать настройки и записать изменения в устройство."""
+        coordinator = self.config_entry.runtime_data
+        if not coordinator.connected:
+            return self.async_abort(reason="not_connected")
+
+        current = {
+            setting.key: coordinator.read(setting.field, setting.stage)
+            for setting in SETTINGS
+        }
+
+        if user_input is not None:
+            for setting in SETTINGS:
+                new = user_input.get(setting.key)
+                if new is None:
+                    continue
+                was = current[setting.key]
+                if was is not None and abs(float(was) - float(new)) < 1e-9:
+                    continue
+                await coordinator.async_send_command(setting.payload_fn(float(new)))
+            await coordinator.async_refresh_config()
+            return self.async_create_entry(data={})
+
+        schema = vol.Schema(
+            {
+                vol.Required(setting.key): NumberSelector(
+                    NumberSelectorConfig(
+                        min=setting.minimum,
+                        max=setting.maximum,
+                        step=setting.step,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement=setting.unit,
+                    )
+                )
+                for setting in SETTINGS
+            }
+        )
+        known = {key: value for key, value in current.items() if value is not None}
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, known),
         )

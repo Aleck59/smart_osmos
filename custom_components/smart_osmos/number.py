@@ -1,104 +1,58 @@
-"""Настройки Smart Osmos, доступные из Home Assistant."""
+"""Настройки Smart Osmos как отдельные сущности.
+
+Те же настройки собраны в одну форму «Настроить» у интеграции, поэтому по
+умолчанию эти сущности выключены — включайте те, что нужны в автоматизациях.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
 
 from homeassistant.components.number import (
     NumberEntity,
     NumberEntityDescription,
     NumberMode,
 )
-from homeassistant.const import EntityCategory, UnitOfVolume
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import STAGE_COUNT, STAGE_NAMES
-from .coordinator import SmartOsmosConfigEntry, SmartOsmosCoordinator
-from .entity import SmartOsmosEntity
+from .coordinator import SmartOsmosConfigEntry
+from .entity import (
+    SmartOsmosDescription,
+    SmartOsmosEntity,
+    async_add_described_entities,
+)
+from .settings import SETTINGS, PayloadFn
+
+# Запись в BLE-характеристику — операция последовательная.
+PARALLEL_UPDATES = 1
 
 
 @dataclass(frozen=True, kw_only=True)
-class SmartOsmosNumberDescription(NumberEntityDescription):
-    """Описание настройки: как её прочитать и как записать."""
+class SmartOsmosNumberDescription(NumberEntityDescription, SmartOsmosDescription):
+    """Описание настройки: какое поле читать и какую команду записывать."""
 
-    value_fn: Callable[[SmartOsmosCoordinator], Any]
-    set_fn: Callable[[SmartOsmosCoordinator, float], Coroutine[Any, Any, None]]
-
-
-def _stage_limits() -> list[SmartOsmosNumberDescription]:
-    """Ресурс каждой ступени в литрах."""
-    return [
-        SmartOsmosNumberDescription(
-            key=f"stage_{stage}_limit",
-            name=f"{stage}. {STAGE_NAMES[stage]}: ресурс",
-            native_unit_of_measurement=UnitOfVolume.LITERS,
-            native_min_value=0,
-            native_max_value=30000,
-            native_step=100,
-            mode=NumberMode.BOX,
-            entity_category=EntityCategory.CONFIG,
-            value_fn=lambda c, s=stage: c.stage_value("limit", s),
-            set_fn=lambda c, v, s=stage: c.async_send_command(
-                {"key": "stage", "n": s, "limit": int(v)}
-            ),
-        )
-        for stage in range(1, STAGE_COUNT + 1)
-    ]
+    payload_fn: PayloadFn
 
 
-NUMBERS: tuple[SmartOsmosNumberDescription, ...] = (
+NUMBERS: tuple[SmartOsmosNumberDescription, ...] = tuple(
     SmartOsmosNumberDescription(
-        key="pulses_per_liter_in",
-        name="Импульсов на литр (водопровод)",
-        native_min_value=100,
-        native_max_value=20000,
-        native_step=10,
+        key=setting.key,
+        name=setting.name,
+        icon=setting.icon,
+        field=setting.field,
+        stage=setting.stage,
+        native_min_value=setting.minimum,
+        native_max_value=setting.maximum,
+        native_step=setting.step,
+        native_unit_of_measurement=setting.unit,
         mode=NumberMode.BOX,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda c: c.value("c_in"),
-        set_fn=lambda c, v: c.async_send_command({"key": "c_config", "c_in": int(v)}),
-    ),
-    SmartOsmosNumberDescription(
-        key="pulses_per_liter_out",
-        name="Импульсов на литр (чистая)",
-        native_min_value=100,
-        native_max_value=20000,
-        native_step=10,
-        mode=NumberMode.BOX,
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda c: c.value("c_out"),
-        set_fn=lambda c, v: c.async_send_command({"key": "c_config", "c_off": int(v)}),
-    ),
-    SmartOsmosNumberDescription(
-        key="tds_factor",
-        name="Множитель калибровки TDS",
-        native_min_value=0.2,
-        native_max_value=3.0,
-        native_step=0.01,
-        mode=NumberMode.BOX,
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda c: c.value("tds_factor"),
-        set_fn=lambda c, v: c.async_send_command(
-            {"key": "tds_cal", "factor": round(v, 4)}
-        ),
-    ),
-    SmartOsmosNumberDescription(
-        key="tds_offset",
-        name="Смещение калибровки TDS",
-        native_unit_of_measurement="ppm",
-        native_min_value=-200,
-        native_max_value=200,
-        native_step=1,
-        mode=NumberMode.BOX,
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda c: c.value("tds_offset"),
-        set_fn=lambda c, v: c.async_send_command(
-            {"key": "tds_cal", "offset": round(v, 2)}
-        ),
-    ),
+        entity_registry_enabled_default=False,
+        payload_fn=setting.payload_fn,
+    )
+    for setting in SETTINGS
 )
 
 
@@ -108,11 +62,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Создать настройки."""
-    coordinator = entry.runtime_data
-    async_add_entities(
-        SmartOsmosNumber(coordinator, description)
-        for description in (*NUMBERS, *_stage_limits())
-    )
+    async_add_described_entities(entry, async_add_entities, SmartOsmosNumber, NUMBERS)
 
 
 class SmartOsmosNumber(SmartOsmosEntity, NumberEntity):
@@ -123,11 +73,13 @@ class SmartOsmosNumber(SmartOsmosEntity, NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Текущее значение настройки."""
-        value = self.entity_description.value_fn(self.coordinator)
+        value = self.value
         return float(value) if isinstance(value, (int, float)) else None
 
     async def async_set_native_value(self, value: float) -> None:
         """Записать новое значение в устройство."""
-        await self.entity_description.set_fn(self.coordinator, value)
+        await self.coordinator.async_send_command(
+            self.entity_description.payload_fn(value)
+        )
         # Сразу перечитываем конфигурацию, чтобы интерфейс показал новое значение.
         await self.coordinator.async_refresh_config()

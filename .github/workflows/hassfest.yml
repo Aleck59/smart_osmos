@@ -22,26 +22,33 @@ jobs:
     name: hassfest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
     name: HACS
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hacs/action@main
         with:
           category: integration
-          ignore: brands
+          # brands      — иконка подаётся в home-assistant/brands отдельно,
+          #               см. brands/README.md;
+          # topics,
+          # description — требования к метаданным репозитория на GitHub. Они
+          #               нужны только для подачи в каталог HACS; установка
+          #               через «Custom repositories» работает и без них.
+          #               Заполните About у репозитория и уберите их отсюда.
+          ignore: brands topics description
 
   lint:
     name: Проверка стиля Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -49,7 +56,7 @@ jobs:
         run: pip install ruff
 
       - name: ruff check
-        run: ruff check custom_components
+        run: ruff check custom_components tools
 
       - name: ruff format --check
-        run: ruff format --check custom_components
+        run: ruff format --check custom_components tools
