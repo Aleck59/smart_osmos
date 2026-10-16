@@ -56,7 +56,7 @@ substitutions:
   device_name: smart-osmos
   ble_name: "SMART OSMOS"    # имя, по которому устройство ищет приложение
   ota_password: "OeN12345"   # пароль обновления, как в исходной прошивке
-  display_timeout: "10min"   # гашение дисплея при бездействии кнопки
+  display_timeout: "30s"     # гашение дисплея при бездействии кнопки
   display_contrast: "1.0"    # яркость дисплея, 0..1
   i2c_address: "0x3C"
 
@@ -552,10 +552,11 @@ interval:
           id: char_ext_cfg
 
   # Гашение дисплея при бездействии кнопки (во время прошивки не гасим).
-  - interval: 10s
+  # Проверка раз в секунду — таймаут бывает всего несколько десятков секунд.
+  - interval: 1s
     then:
       - lambda: |-
-          const uint32_t timeout = (uint32_t) id(osmos).display_timeout_min() * 60000UL;
+          const uint32_t timeout = (uint32_t) id(osmos).display_timeout_s() * 1000UL;
           if (id(ui_display_on) && !id(ota_active) && (millis() - id(ui_last_activity)) > timeout) {
             id(ui_display_on) = false;
             id(oled).turn_off();
