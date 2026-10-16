@@ -21,7 +21,9 @@ namespace smart_osmos {
 static const uint8_t OSMOS_STAGES = 5;
 
 /// Магия структуры настроек. Меняется при несовместимом изменении OsmosPrefs.
-static const uint32_t OSMOS_PREF_MAGIC = 0x534F4D32;  // "SOM2"
+static const uint32_t OSMOS_PREF_MAGIC = 0x534F4D33;  // "SOM3"
+/// Прошлая версия структуры: та же раскладка, но таймаут дисплея в минутах.
+static const uint32_t OSMOS_PREF_MAGIC_V2 = 0x534F4D32;  // "SOM2"
 
 /// Откуда ступень берёт объём: до мембраны (водопровод) или после (пермеат).
 enum StageSource : uint8_t {
@@ -65,7 +67,7 @@ struct OsmosPrefs {
   float tds_offset;  ///< калибровочное смещение TDS, ppm
 
   int16_t tz_offset_min;        ///< смещение часового пояса в минутах (из Home Assistant)
-  uint16_t display_timeout_min; ///< таймаут гашения дисплея, минут
+  uint16_t display_timeout_s;   ///< таймаут гашения дисплея, секунд
 
   float tds_day_min;
   float tds_day_max;
@@ -89,7 +91,7 @@ class SmartOsmos : public PollingComponent {
   void set_default_coeff_out(float v) { this->def_coeff_out_ = v; }
   void set_default_tds_factor(float v) { this->def_tds_factor_ = v; }
   void set_default_tds_offset(float v) { this->def_tds_offset_ = v; }
-  void set_default_display_timeout(uint16_t minutes) { this->def_display_timeout_ = minutes; }
+  void set_default_display_timeout(uint16_t seconds) { this->def_display_timeout_ = seconds; }
   void set_default_stage(uint8_t i, uint32_t limit, uint8_t source);
   void set_ota_password(const std::string &p) { this->ota_password_ = p; }
   void set_local_mtu(uint16_t mtu) { this->local_mtu_ = mtu; }
@@ -170,8 +172,8 @@ class SmartOsmos : public PollingComponent {
   float tds_offset() const { return this->prefs_.tds_offset; }
   void set_tds_offset(float v);
 
-  uint16_t display_timeout_min() const { return this->prefs_.display_timeout_min; }
-  void set_display_timeout_min(uint16_t v);
+  uint16_t display_timeout_s() const { return this->prefs_.display_timeout_s; }
+  void set_display_timeout_s(uint16_t seconds);
 
   // --------------------------------------------------- калибровка «на 1 литр»
   /// Запустить калибровку выходного (чистого) расходомера.
@@ -223,6 +225,7 @@ class SmartOsmos : public PollingComponent {
   void add_volume_(float liters_in, float liters_out);
   void apply_mtu_();
   void open_storage_();
+  void migrate_from_v2_();
   void remember_saved_volume_();
 
   // Хранилище: кольцевой журнал в разделе flash, а если раздела нет — NVS.
@@ -254,7 +257,7 @@ class SmartOsmos : public PollingComponent {
   float def_coeff_out_{5880.0f};
   float def_tds_factor_{1.0f};
   float def_tds_offset_{0.0f};
-  uint16_t def_display_timeout_{10};
+  uint16_t def_display_timeout_{30};
   uint32_t def_stage_limit_[OSMOS_STAGES]{6000, 6000, 6000, 5000, 3000};
   uint8_t def_stage_source_[OSMOS_STAGES]{STAGE_SRC_INLET, STAGE_SRC_INLET, STAGE_SRC_INLET, STAGE_SRC_INLET,
                                           STAGE_SRC_PERMEATE};

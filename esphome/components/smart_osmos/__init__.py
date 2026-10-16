@@ -70,9 +70,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_PULSES_PER_LITER_OUT, default=5880): cv.positive_not_null_int,
         cv.Optional(CONF_TDS_FACTOR, default=1.0): cv.positive_float,
         cv.Optional(CONF_TDS_OFFSET, default=0.0): cv.float_,
-        cv.Optional(CONF_DISPLAY_TIMEOUT, default="10min"): cv.All(
-            cv.positive_time_period_minutes,
-            cv.Range(min=cv.TimePeriod(minutes=1), max=cv.TimePeriod(minutes=1440)),
+        cv.Optional(CONF_DISPLAY_TIMEOUT, default="30s"): cv.All(
+            cv.positive_time_period_seconds,
+            cv.Range(min=cv.TimePeriod(seconds=5), max=cv.TimePeriod(hours=18)),
         ),
         cv.Optional(CONF_FLOW_WINDOW, default="5s"): cv.All(
             cv.positive_time_period_milliseconds,
@@ -104,7 +104,7 @@ async def to_code(config):
     cg.add(var.set_default_coeff_out(config[CONF_PULSES_PER_LITER_OUT]))
     cg.add(var.set_default_tds_factor(config[CONF_TDS_FACTOR]))
     cg.add(var.set_default_tds_offset(config[CONF_TDS_OFFSET]))
-    cg.add(var.set_default_display_timeout(int(config[CONF_DISPLAY_TIMEOUT].total_minutes)))
+    cg.add(var.set_default_display_timeout(int(config[CONF_DISPLAY_TIMEOUT].total_seconds)))
     cg.add(var.set_flow_window(int(config[CONF_FLOW_WINDOW].total_milliseconds)))
     cg.add(var.set_local_mtu(config[CONF_LOCAL_MTU]))
     cg.add(var.set_ota_password(config[CONF_OTA_PASSWORD]))

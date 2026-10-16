@@ -167,7 +167,7 @@ void SmartOsmos::load_defaults_() {
   this->prefs_.coeff_out = this->def_coeff_out_;
   this->prefs_.tds_factor = this->def_tds_factor_;
   this->prefs_.tds_offset = this->def_tds_offset_;
-  this->prefs_.display_timeout_min = this->def_display_timeout_;
+  this->prefs_.display_timeout_s = this->def_display_timeout_;
   this->prefs_.tds_day_min = NAN;
   this->prefs_.tds_day_max = NAN;
   for (uint8_t i = 0; i < OSMOS_STAGES; i++) {
@@ -201,11 +201,14 @@ void SmartOsmos::setup() {
   this->pref_ = global_preferences->make_preference<OsmosPrefs>(fnv1_hash("smart_osmos_state"));
   this->open_storage_();
 
+  auto known = [this]() {
+    return this->prefs_.magic == OSMOS_PREF_MAGIC || this->prefs_.magic == OSMOS_PREF_MAGIC_V2;
+  };
   bool loaded = false;
-  if (this->ring_.ready() && this->ring_.load(&this->prefs_) && this->prefs_.magic == OSMOS_PREF_MAGIC) {
+  if (this->ring_.ready() && this->ring_.load(&this->prefs_) && known()) {
     loaded = true;
     ESP_LOGI(TAG, "Состояние прочитано из журнала, запись №%u", this->ring_.sequence());
-  } else if (this->pref_.load(&this->prefs_) && this->prefs_.magic == OSMOS_PREF_MAGIC) {
+  } else if (this->pref_.load(&this->prefs_) && known()) {
     loaded = true;
     if (this->ring_.ready()) {
       // Первый запуск с журналом: переносим состояние из NVS без потерь.
@@ -223,13 +226,29 @@ void SmartOsmos::setup() {
     this->prefs_.coeff_in = this->def_coeff_in_;
   if (!(this->prefs_.coeff_out > 0))
     this->prefs_.coeff_out = this->def_coeff_out_;
-  if (this->prefs_.display_timeout_min == 0)
-    this->prefs_.display_timeout_min = this->def_display_timeout_;
+  if (this->prefs_.magic == OSMOS_PREF_MAGIC_V2)
+    this->migrate_from_v2_();
+  if (this->prefs_.display_timeout_s == 0)
+    this->prefs_.display_timeout_s = this->def_display_timeout_;
 
   this->flow_window_start_ = millis();
   this->last_stats_save_ = millis();
   this->saved_tds_count_ = this->prefs_.tds_day_count;
   this->remember_saved_volume_();
+}
+
+void SmartOsmos::migrate_from_v2_() {
+  // В прошлой версии таймаут дисплея хранился в минутах. Значение 10 было
+  // заводским — его меняем на новое заводское, своё значение переводим в секунды.
+  const uint16_t minutes = this->prefs_.display_timeout_s;
+  if (minutes == 0 || minutes == 10) {
+    this->prefs_.display_timeout_s = this->def_display_timeout_;
+  } else {
+    this->prefs_.display_timeout_s = static_cast<uint16_t>(std::min<uint32_t>(minutes * 60u, 65535u));
+  }
+  ESP_LOGI(TAG, "Состояние переведено на новую версию: таймаут дисплея %u с", this->prefs_.display_timeout_s);
+  this->prefs_.magic = OSMOS_PREF_MAGIC;
+  this->save();
 }
 
 void SmartOsmos::remember_saved_volume_() {
@@ -566,10 +585,10 @@ void SmartOsmos::set_tds_offset(float v) {
   this->save();
 }
 
-void SmartOsmos::set_display_timeout_min(uint16_t v) {
-  if (this->prefs_.display_timeout_min == v)
+void SmartOsmos::set_display_timeout_s(uint16_t v) {
+  if (v == 0 || this->prefs_.display_timeout_s == v)
     return;
-  this->prefs_.display_timeout_min = v;
+  this->prefs_.display_timeout_s = v;
   this->save();
 }
 
@@ -768,7 +787,7 @@ std::string SmartOsmos::ext_config_json() {
   json_kv_raw(j, "tds_factor", fmt("%.4f", this->prefs_.tds_factor));
   json_kv_raw(j, "tds_offset", fmt("%.2f", this->prefs_.tds_offset));
   json_kv_raw(j, "tz", itos(this->prefs_.tz_offset_min));
-  json_kv_raw(j, "dt", itos(this->prefs_.display_timeout_min));
+  json_kv_raw(j, "dts", itos(this->prefs_.display_timeout_s));
   json_kv_str(j, "fw", this->firmware_version_);
   json_kv_raw(j, "st", this->ring_.ready() ? "1" : "0");
 
@@ -906,10 +925,13 @@ void SmartOsmos::handle_command(const std::string &payload) {
       this->reset_day_stats();
 
   } else if (key == "display") {
-    // Расширение протокола: таймаут гашения дисплея, минут.
-    uint32_t minutes;
-    if (json_field_u32(payload, "timeout", minutes) && minutes >= 1 && minutes <= 1440)
-      this->set_display_timeout_min(static_cast<uint16_t>(minutes));
+    // Расширение протокола: таймаут гашения дисплея. timeout_s — секунды;
+    // timeout — минуты, как в прошлой версии протокола.
+    uint32_t value;
+    if (json_field_u32(payload, "timeout_s", value) && value >= 5 && value <= 65535)
+      this->set_display_timeout_s(static_cast<uint16_t>(value));
+    else if (json_field_u32(payload, "timeout", value) && value >= 1 && value <= 1092)
+      this->set_display_timeout_s(static_cast<uint16_t>(value * 60));
 
   } else if (key == "wifi" || key == "wifien" || key == "save") {
     // Wi-Fi на ESP32-H2 нет. Команды принимаются и игнорируются, чтобы
