@@ -12,6 +12,10 @@
 
 // esp_ble_gatt_set_local_mtu() живёт в Bluedroid; sdkconfig-флаг выставляет
 // сам компонент esp32_ble, поэтому проверяем именно его.
+#ifdef USE_ESP32
+#include <esp_partition.h>
+#endif
+
 #if defined(USE_ESP32) && defined(CONFIG_BT_BLUEDROID_ENABLED)
 #define OSMOS_HAS_BLUEDROID
 #include <esp_gatt_common_api.h>
@@ -22,8 +26,32 @@ namespace smart_osmos {
 
 static const char *const TAG = "smart_osmos";
 
-/// Интервал сохранения накопленных объёмов во flash.
-static const uint32_t SAVE_INTERVAL_MS = 30 * 60 * 1000UL;
+/// Суточная статистика TDS меняется каждые 2 с; во flash её кладём раз в час.
+static const uint32_t STATS_SAVE_INTERVAL_MS = 60 * 60 * 1000UL;
+
+/// Пользовательский подтип раздела данных под журнал состояния.
+static const uint8_t STORAGE_PARTITION_SUBTYPE = 0x40;
+
+#ifdef USE_ESP32
+/// Раздел flash как поверхность для кольцевого журнала.
+class EspPartitionIO : public FlashIO {
+ public:
+  explicit EspPartitionIO(const esp_partition_t *part) : part_(part) {}
+  size_t size() const override { return this->part_->size; }
+  bool read(size_t offset, void *dst, size_t len) override {
+    return esp_partition_read(this->part_, offset, dst, len) == ESP_OK;
+  }
+  bool write(size_t offset, const void *src, size_t len) override {
+    return esp_partition_write(this->part_, offset, src, len) == ESP_OK;
+  }
+  bool erase_sector(size_t offset) override {
+    return esp_partition_erase_range(this->part_, offset, this->sector_size()) == ESP_OK;
+  }
+
+ protected:
+  const esp_partition_t *part_;
+};
+#endif
 
 // ---------------------------------------------------------------------------
 // Мини-парсер плоского JSON.
@@ -148,12 +176,47 @@ void SmartOsmos::load_defaults_() {
   }
 }
 
+void SmartOsmos::open_storage_() {
+#ifdef USE_ESP32
+  const esp_partition_t *part =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, static_cast<esp_partition_subtype_t>(STORAGE_PARTITION_SUBTYPE),
+                               this->storage_label_.c_str());
+  if (part == nullptr) {
+    ESP_LOGW(TAG,
+             "Раздела «%s» в таблице разделов нет — состояние хранится в NVS. "
+             "Чтобы включить журнал с распределением износа, прошейте устройство один раз по USB.",
+             this->storage_label_.c_str());
+    return;
+  }
+  this->ring_io_ = std::make_unique<EspPartitionIO>(part);
+  if (!this->ring_.begin(this->ring_io_.get(), sizeof(OsmosPrefs))) {
+    ESP_LOGE(TAG, "Раздел «%s» слишком мал для журнала", this->storage_label_.c_str());
+    this->ring_io_.reset();
+  }
+#endif
+}
+
 void SmartOsmos::setup() {
+  // Старое место хранения: оно же источник для переезда в журнал.
   this->pref_ = global_preferences->make_preference<OsmosPrefs>(fnv1_hash("smart_osmos_state"));
-  if (!this->pref_.load(&this->prefs_) || this->prefs_.magic != OSMOS_PREF_MAGIC) {
+  this->open_storage_();
+
+  bool loaded = false;
+  if (this->ring_.ready() && this->ring_.load(&this->prefs_) && this->prefs_.magic == OSMOS_PREF_MAGIC) {
+    loaded = true;
+    ESP_LOGI(TAG, "Состояние прочитано из журнала, запись №%u", this->ring_.sequence());
+  } else if (this->pref_.load(&this->prefs_) && this->prefs_.magic == OSMOS_PREF_MAGIC) {
+    loaded = true;
+    if (this->ring_.ready()) {
+      // Первый запуск с журналом: переносим состояние из NVS без потерь.
+      ESP_LOGI(TAG, "Перенос состояния из NVS в журнал");
+      this->ring_.append(&this->prefs_);
+    }
+  }
+  if (!loaded) {
     ESP_LOGI(TAG, "Сохранённого состояния нет — применяю значения по умолчанию");
     this->load_defaults_();
-    this->pref_.save(&this->prefs_);
+    this->save();
   }
   // Защита от нулевых коэффициентов: деление на них происходит каждую секунду.
   if (!(this->prefs_.coeff_in > 0))
@@ -164,7 +227,14 @@ void SmartOsmos::setup() {
     this->prefs_.display_timeout_min = this->def_display_timeout_;
 
   this->flow_window_start_ = millis();
-  this->last_save_ = millis();
+  this->last_stats_save_ = millis();
+  this->saved_tds_count_ = this->prefs_.tds_day_count;
+  this->remember_saved_volume_();
+}
+
+void SmartOsmos::remember_saved_volume_() {
+  this->saved_liters_in_ = static_cast<uint32_t>(this->prefs_.total_in);
+  this->saved_liters_out_ = static_cast<uint32_t>(this->prefs_.total_out);
 }
 
 void SmartOsmos::apply_mtu_() {
@@ -192,7 +262,14 @@ void SmartOsmos::apply_mtu_() {
 void SmartOsmos::loop() { this->apply_mtu_(); }
 
 void SmartOsmos::dump_config() {
-  ESP_LOGCONFIG(TAG, "Smart Osmos:");
+  ESP_LOGCONFIG(TAG, "Smart Osmos %s:", this->firmware_version_.c_str());
+  if (this->ring_.ready()) {
+    ESP_LOGCONFIG(TAG, "  Хранилище: журнал «%s», %u слотов по %u Б, последняя запись №%u",
+                  this->storage_label_.c_str(), (unsigned) this->ring_.slot_count(),
+                  (unsigned) this->ring_.slot_size(), this->ring_.sequence());
+  } else {
+    ESP_LOGCONFIG(TAG, "  Хранилище: NVS (раздела «%s» нет)", this->storage_label_.c_str());
+  }
   ESP_LOGCONFIG(TAG, "  Импульсов на литр: водопровод %.0f, чистая %.0f", this->prefs_.coeff_in,
                 this->prefs_.coeff_out);
   ESP_LOGCONFIG(TAG, "  Калибровка TDS: множитель %.3f, смещение %.1f ppm", this->prefs_.tds_factor,
@@ -225,8 +302,6 @@ void SmartOsmos::add_volume_(float liters_in, float liters_out) {
   for (uint8_t i = 0; i < OSMOS_STAGES; i++) {
     this->prefs_.stage_used[i] += (this->prefs_.stage_source[i] == STAGE_SRC_PERMEATE) ? liters_out : liters_in;
   }
-  if (liters_in > 0 || liters_out > 0)
-    this->dirty_ = true;
 }
 
 void SmartOsmos::update() {
@@ -260,9 +335,15 @@ void SmartOsmos::update() {
   if (day != this->prefs_.tds_day_index)
     this->roll_day_(day);
 
-  // --- периодическое сохранение ---
-  if (this->dirty_ && (now - this->last_save_) >= SAVE_INTERVAL_MS)
+  // --- сохранение: объёмы — на каждом новом литре любой из линий ---
+  if (static_cast<uint32_t>(this->prefs_.total_in) != this->saved_liters_in_ ||
+      static_cast<uint32_t>(this->prefs_.total_out) != this->saved_liters_out_) {
     this->save();
+  } else if (this->prefs_.tds_day_count != this->saved_tds_count_ &&
+             (now - this->last_stats_save_) >= STATS_SAVE_INTERVAL_MS) {
+    // Суточная статистика TDS — раз в час, если воды за это время не было.
+    this->save();
+  }
 }
 
 float SmartOsmos::minute_in() const {
@@ -286,6 +367,16 @@ void SmartOsmos::set_tds_voltage(float volts) {
   if (std::isnan(volts))
     return;
   this->tds_voltage_ = volts;
+
+  const uint32_t now = millis();
+  this->tds_seen_ = true;
+  this->tds_last_update_ = now;
+  if (volts < this->tds_fault_min_v_ || volts > this->tds_fault_max_v_) {
+    if (this->tds_out_of_range_since_ == 0)
+      this->tds_out_of_range_since_ = now | 1;  // 0 зарезервирован под «в норме»
+  } else {
+    this->tds_out_of_range_since_ = 0;
+  }
 
   // Формула DFRobot TDS Meter с термокомпенсацией — та же, что в исходном проекте.
   const float t_coef = 1.0f + 0.02f * (this->water_temp_ - 25.0f);
@@ -319,7 +410,7 @@ void SmartOsmos::roll_day_(uint32_t day_index) {
   this->prefs_.tds_day_max = NAN;
   this->prefs_.tds_day_sum = 0;
   this->prefs_.tds_day_count = 0;
-  this->dirty_ = true;
+  this->save();
 }
 
 void SmartOsmos::reset_day_stats() { this->roll_day_(this->current_day_()); }
@@ -400,6 +491,33 @@ void SmartOsmos::reset_totals() {
   this->prefs_.total_out = 0;
   ESP_LOGI(TAG, "Суммарные счётчики обнулены");
   this->save();
+}
+
+bool SmartOsmos::tds_fault() const {
+  const uint32_t now = millis();
+  // Измерений нет вовсе или они давно прекратились.
+  if (!this->tds_seen_)
+    return now > this->tds_fault_delay_ms_;
+  if (now - this->tds_last_update_ > this->tds_fault_delay_ms_)
+    return true;
+  // Напряжение за пределами рабочего диапазона модуля слишком долго.
+  return this->tds_out_of_range_since_ != 0 && now - this->tds_out_of_range_since_ >= this->tds_fault_delay_ms_;
+}
+
+Health SmartOsmos::health() const {
+  if (this->tds_fault())
+    return HEALTH_TDS_FAULT;
+  bool low = false;
+  for (uint8_t i = 0; i < OSMOS_STAGES; i++) {
+    const StageLevel level = this->stage_level(i);
+    if (level == STAGE_LEVEL_CRITICAL || level == STAGE_LEVEL_DEAD)
+      return HEALTH_BAD;
+    if (level == STAGE_LEVEL_LOW)
+      low = true;
+  }
+  if (this->tds_ > this->tds_high_ppm_)
+    return HEALTH_BAD;
+  return low ? HEALTH_LOW : HEALTH_OK;
 }
 
 float SmartOsmos::purification_ratio() const {
@@ -496,7 +614,7 @@ void SmartOsmos::set_epoch(uint32_t epoch) {
       if (this->prefs_.stage_date[i] == 0 && this->prefs_.stage_used[i] == 0)
         this->prefs_.stage_date[i] = epoch;
     }
-    this->dirty_ = true;
+    this->save();
   }
 }
 
@@ -532,9 +650,15 @@ std::string SmartOsmos::uptime_str() const {
 }
 
 void SmartOsmos::save() {
-  this->pref_.save(&this->prefs_);
-  this->dirty_ = false;
-  this->last_save_ = millis();
+  if (this->ring_.ready()) {
+    if (!this->ring_.append(&this->prefs_))
+      ESP_LOGE(TAG, "Не удалось записать состояние в журнал");
+  } else {
+    this->pref_.save(&this->prefs_);
+  }
+  this->remember_saved_volume_();
+  this->saved_tds_count_ = this->prefs_.tds_day_count;
+  this->last_stats_save_ = millis();
 }
 
 // ---------------------------------------------------------------------------
@@ -614,6 +738,8 @@ std::string SmartOsmos::ext_json() {
   json_kv_raw(j, "cal", this->calib_active_ ? "1" : "0");
   json_kv_raw(j, "cal_p", itos(this->calib_pulses_));
   json_kv_raw(j, "ts", itos(this->now_epoch()));
+  json_kv_raw(j, "tdsf", this->tds_fault() ? "1" : "0");
+  json_kv_raw(j, "hl", itos(this->health()));
 
   std::string rem = "[", used = "[";
   for (uint8_t i = 0; i < OSMOS_STAGES; i++) {
@@ -643,6 +769,8 @@ std::string SmartOsmos::ext_config_json() {
   json_kv_raw(j, "tds_offset", fmt("%.2f", this->prefs_.tds_offset));
   json_kv_raw(j, "tz", itos(this->prefs_.tz_offset_min));
   json_kv_raw(j, "dt", itos(this->prefs_.display_timeout_min));
+  json_kv_str(j, "fw", this->firmware_version_);
+  json_kv_raw(j, "st", this->ring_.ready() ? "1" : "0");
 
   std::string lim = "[", date = "[", src = "[";
   for (uint8_t i = 0; i < OSMOS_STAGES; i++) {
@@ -776,6 +904,12 @@ void SmartOsmos::handle_command(const std::string &payload) {
     std::string act;
     if (json_field(payload, "act", act) && act == "day_reset")
       this->reset_day_stats();
+
+  } else if (key == "display") {
+    // Расширение протокола: таймаут гашения дисплея, минут.
+    uint32_t minutes;
+    if (json_field_u32(payload, "timeout", minutes) && minutes >= 1 && minutes <= 1440)
+      this->set_display_timeout_min(static_cast<uint16_t>(minutes));
 
   } else if (key == "wifi" || key == "wifien" || key == "save") {
     // Wi-Fi на ESP32-H2 нет. Команды принимаются и игнорируются, чтобы

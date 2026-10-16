@@ -88,7 +88,27 @@ def _stage_sensors() -> list[SmartOsmosSensorDescription]:
     return sensors
 
 
+#: Сводное состояние — тот же смысл, что у цвета статусного светодиода.
+HEALTH_STATES = ("норма", "ресурс на исходе", "требуется внимание", "сбой TDS-датчика")
+
+
+def _health(coordinator: Any) -> str | None:
+    """Код состояния из прошивки в человекочитаемый вид."""
+    code = coordinator.value("hl")
+    if not isinstance(code, int) or not 0 <= code < len(HEALTH_STATES):
+        return None
+    return HEALTH_STATES[code]
+
+
 SENSORS: tuple[SmartOsmosSensorDescription, ...] = (
+    SmartOsmosSensorDescription(
+        key="health",
+        name="Состояние",
+        icon="mdi:list-status",
+        device_class=SensorDeviceClass.ENUM,
+        options=list(HEALTH_STATES),
+        value_fn=_health,
+    ),
     SmartOsmosSensorDescription(
         key="tds",
         icon="mdi:water-percent",

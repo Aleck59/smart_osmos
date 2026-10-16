@@ -34,7 +34,8 @@
           "stage_2_limit": "Stage 2 — GAC carbon: capacity",
           "stage_3_limit": "Stage 3 — CTO carbon: capacity",
           "stage_4_limit": "Stage 4 — RO membrane: capacity",
-          "stage_5_limit": "Stage 5 — post filter: capacity"
+          "stage_5_limit": "Stage 5 — post filter: capacity",
+          "display_timeout": "Display timeout"
         }
       }
     },

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import UnitOfTime, UnitOfVolume
 
 from .const import STAGE_NAMES, STAGES
 
@@ -99,6 +99,17 @@ SETTINGS: tuple[DeviceSetting, ...] = (
         unit=PPM,
         icon="mdi:tune-variant",
         payload_fn=lambda v: {"key": "tds_cal", "offset": round(v, 2)},
+    ),
+    DeviceSetting(
+        key="display_timeout",
+        name="Таймаут дисплея",
+        field="dt",
+        minimum=1,
+        maximum=120,
+        step=1,
+        unit=UnitOfTime.MINUTES,
+        icon="mdi:monitor-off",
+        payload_fn=lambda v: {"key": "display", "timeout": int(v)},
     ),
     *_stage_settings(),
 )

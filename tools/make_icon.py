@@ -128,6 +128,28 @@ def logo(short_side, font_path, dark=False):
     )
 
 
+def oled_logo(font_path, width=128, height=32):
+    """Монохромный логотип для экрана загрузки OLED 128x32.
+
+    Слева капля (тело светится, полосы-ступени гаснут), справа название в две
+    строки. Порог яркости превращает сглаженную иконку в чистый 1 бит.
+    """
+    img = Image.new("1", (width, height), 0)
+    drop = render(height)
+    for y in range(height):
+        for x in range(height):
+            r, g, b, a = drop.getpixel((x, y))
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            if a > 128 and lum < 200:
+                img.putpixel((x + 2, y), 1)
+    font = ImageFont.truetype(font_path, 15)
+    d = ImageDraw.Draw(img)
+    x = height + 8
+    d.text((x, 8), "SMART", font=font, fill=1, anchor="lm")
+    d.text((x, 24), "OSMOS", font=font, fill=1, anchor="lm")
+    return img
+
+
 def main():
     """Собрать все четыре файла в каталоге brands/."""
     import argparse
@@ -144,6 +166,16 @@ def main():
         default=str(pathlib.Path(__file__).resolve().parent.parent / "brands"),
         help="куда положить файлы",
     )
+    parser.add_argument(
+        "--oled",
+        default=str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "esphome"
+            / "images"
+            / "boot_logo.png"
+        ),
+        help="куда положить монохромный логотип 128x32 для экрана загрузки",
+    )
     args = parser.parse_args()
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -156,6 +188,12 @@ def main():
     logo(256, args.font, dark=True).save(out / "dark_logo.png")
     logo(512, args.font, dark=True).save(out / "dark_logo@2x.png")
     print(f"Файлы записаны в {out}")
+
+    if args.oled:
+        oled = pathlib.Path(args.oled)
+        oled.parent.mkdir(parents=True, exist_ok=True)
+        oled_logo(args.font).save(oled)
+        print(f"Логотип для OLED записан в {oled}")
 
 
 if __name__ == "__main__":
