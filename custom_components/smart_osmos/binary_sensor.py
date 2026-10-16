@@ -62,6 +62,15 @@ BINARY_SENSORS: tuple[SmartOsmosBinaryDescription, ...] = (
         value_fn=lambda c: _any_stage_below(c, 20),
     ),
     SmartOsmosBinaryDescription(
+        key="tds_fault",
+        name="Неисправность TDS-датчика",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:water-alert",
+        value_fn=lambda c: (
+            bool(c.value("tdsf")) if c.value("tdsf") is not None else None
+        ),
+    ),
+    SmartOsmosBinaryDescription(
         key="calibrating",
         icon="mdi:beaker-outline",
         name="Идёт калибровка",

@@ -15,6 +15,7 @@ from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -219,9 +220,19 @@ class SmartOsmosCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         # Телеметрия и конфигурация приходят разными пакетами и накапливаются
         # в одном словаре, поэтому обновляем его, а не заменяем.
+        firmware = message.get("fw")
+        if isinstance(firmware, str) and firmware != self.data.get("fw"):
+            self._update_firmware_version(firmware)
         self.data.update(message)
         self.data["last_seen"] = time.monotonic()
         self.async_set_updated_data(self.data)
+
+    def _update_firmware_version(self, version: str) -> None:
+        """Показать версию прошивки в карточке устройства."""
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, self.address)})
+        if device is not None and device.sw_version != version:
+            registry.async_update_device(device.id, sw_version=version)
 
     async def _async_read(self, uuid: str) -> None:
         """Прочитать характеристику; пустой ответ до первой рассылки — норма."""

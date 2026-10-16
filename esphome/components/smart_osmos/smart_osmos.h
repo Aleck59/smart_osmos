@@ -4,10 +4,13 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/preferences.h"
 
+#include "flash_ring.h"
+
 #ifdef USE_DISPLAY
 #include "esphome/components/display/display.h"
 #endif
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -32,6 +35,14 @@ enum StageLevel : uint8_t {
   STAGE_LEVEL_LOW = 1,      ///< < 20 %  — мигает 0.25 Гц
   STAGE_LEVEL_CRITICAL = 2, ///< < 5 %   — мигает 0.5 Гц, шкала пустая и перечёркнута
   STAGE_LEVEL_DEAD = 3,     ///< = 0 %   — не мигает, шкала перечёркнута крест-накрест
+};
+
+/// Общее состояние установки — по нему выбирается цвет статусного светодиода.
+enum Health : uint8_t {
+  HEALTH_OK = 0,         ///< всё хорошо — зелёный
+  HEALTH_LOW = 1,        ///< ресурс какой-то ступени на исходе — жёлтый
+  HEALTH_BAD = 2,        ///< ресурс исчерпан или TDS выше порога — красный
+  HEALTH_TDS_FAULT = 3,  ///< TDS-модуль не отвечает — белый
 };
 
 /// Всё, что переживает перезагрузку. Обычная (не packed) структура: на RISC-V
@@ -83,6 +94,14 @@ class SmartOsmos : public PollingComponent {
   void set_ota_password(const std::string &p) { this->ota_password_ = p; }
   void set_local_mtu(uint16_t mtu) { this->local_mtu_ = mtu; }
   void set_flow_window(uint32_t ms) { this->flow_window_ms_ = ms; }
+  void set_firmware_version(const std::string &v) { this->firmware_version_ = v; }
+  void set_storage_partition(const std::string &label) { this->storage_label_ = label; }
+  void set_tds_high_ppm(float ppm) { this->tds_high_ppm_ = ppm; }
+  void set_tds_fault_voltage(float min_v, float max_v) {
+    this->tds_fault_min_v_ = min_v;
+    this->tds_fault_max_v_ = max_v;
+  }
+  void set_tds_fault_delay(uint32_t ms) { this->tds_fault_delay_ms_ = ms; }
 
   // ------------------------------------------------------------------- вход
   /// Добавить импульсы входного (водопровод) расходомера.
@@ -121,6 +140,16 @@ class SmartOsmos : public PollingComponent {
 
   /// Коэффициент прочистки: доля чистой воды от водопроводной, %.
   float purification_ratio() const;
+
+  /// TDS-модуль не отвечает: напряжение вне рабочего диапазона дольше
+  /// tds_fault_delay либо датчик давно не присылал измерений.
+  bool tds_fault() const;
+  /// Сводное состояние для светодиода (без учёта идущей прошивки).
+  Health health() const;
+  const std::string &firmware_version() const { return this->firmware_version_; }
+  /// true — состояние хранится в отдельном разделе с распределением износа,
+  /// false — по старинке в NVS (раздела нет в таблице разделов).
+  bool storage_is_ring() const { return this->ring_.ready(); }
   /// Эффективность по формуле исходного проекта: 100 - out*100/in.
   float efficiency() const;
 
@@ -193,6 +222,29 @@ class SmartOsmos : public PollingComponent {
   uint32_t current_day_() const;
   void add_volume_(float liters_in, float liters_out);
   void apply_mtu_();
+  void open_storage_();
+  void remember_saved_volume_();
+
+  // Хранилище: кольцевой журнал в разделе flash, а если раздела нет — NVS.
+  std::unique_ptr<FlashIO> ring_io_;
+  FlashRing ring_;
+  std::string storage_label_{"osmos"};
+  // Объём на момент последнего сохранения, в целых литрах.
+  uint32_t saved_liters_in_{0};
+  uint32_t saved_liters_out_{0};
+  uint32_t saved_tds_count_{0};
+  uint32_t last_stats_save_{0};
+
+  std::string firmware_version_{"dev"};
+
+  // Диагностика TDS-модуля.
+  float tds_high_ppm_{100.0f};
+  float tds_fault_min_v_{0.01f};
+  float tds_fault_max_v_{2.5f};
+  uint32_t tds_fault_delay_ms_{60000};
+  uint32_t tds_out_of_range_since_{0};
+  uint32_t tds_last_update_{0};
+  bool tds_seen_{false};
 
   ESPPreferenceObject pref_;
   OsmosPrefs prefs_{};
@@ -244,8 +296,6 @@ class SmartOsmos : public PollingComponent {
   uint32_t mtu_next_try_{0};
   uint8_t mtu_tries_{0};
 
-  bool dirty_{false};
-  uint32_t last_save_{0};
 };
 
 #ifdef USE_DISPLAY
